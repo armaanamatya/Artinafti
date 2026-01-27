@@ -1,28 +1,23 @@
 # FLUX Upscaler Requirements
 # Python 3.10+ required (tested with Python 3.10.11)
-# For RTX 5060 Ti with CUDA support
+# For RTX 5060 Ti (Blackwell sm_120) with CUDA support
 #
 # INSTALLATION INSTRUCTIONS:
 # 1. Activate your venv:
 #    Windows: .\venv\Scripts\activate
 #    Linux/Mac: source venv/bin/activate
 #
-# 2. Install PyTorch with CUDA FIRST (RTX 5060 Ti supports CUDA 12.4):
-#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 2. Install PyTorch NIGHTLY with CUDA 12.8 FIRST (required for RTX 50-series sm_120):
+#    pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 #
 # 3. Then install other requirements:
 #    pip install -r requirements.txt
 #
-# NOTE: PyTorch packages are listed below but install via command above for proper CUDA support
-# Core PyTorch (install with CUDA via command above, not pip install)
-torch>=2.6.0
-torchvision>=0.21.0
-torchaudio>=2.6.0
+# NOTE: Do NOT install xformers - it causes PyTorch version conflicts
 
 # Diffusion and AI/ML libraries
 diffusers>=0.30.0
 accelerate>=1.0.0
-xformers>=0.0.29.post2
 einops>=0.8.0
 safetensors>=0.4.0
 
@@ -50,6 +45,11 @@ tqdm>=4.66.0
 # Additional utilities
 torchsde>=0.2.6
 omegaconf>=2.3.0
+
+# Development/Notebook tools
+jupyter>=1.0.0
+notebook>=7.0.0
+ipykernel>=6.29.0
 
 # Optional but recommended
 tensorboard>=2.15.0

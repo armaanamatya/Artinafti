@@ -1,3 +1,8 @@
 drive-download-20260121T060204Z-1-001/
-resolution-upscaling/
 venv/
+hf/
+resolution-upscaling/Another_copy_of_flux_upscaler.ipynb
+resolution-upscaling/another_copy_of_flux_upscaler.py
+*.ipynb_checkpoints/
+input/
+output/
