@@ -6,3 +6,7 @@ resolution-upscaling/another_copy_of_flux_upscaler.py
 *.ipynb_checkpoints/
 input/
 output/
+*.env
+*.env.*
+*credentials*.json
+*secret*.json
