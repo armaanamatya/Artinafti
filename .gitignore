@@ -10,3 +10,4 @@ output/
 *.env.*
 *credentials*.json
 *secret*.json
+.claude/
