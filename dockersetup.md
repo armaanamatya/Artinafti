@@ -5,7 +5,7 @@
 You have three Jupyter notebooks implementing different AI upscaling approaches (FLUX, Real-ESRGAN, Imagen) that need to be containerized for production use. The goal is to:
 
 1. **Package notebooks into a Docker container** with all dependencies and AI models pre-installed
-2. **Expose REST API endpoints** using Python FastAPI to allow programmatic access to each upscaler
+2. **Expose REST API endpoints** using NestJS + Python worker to allow programmatic access to each upscaler
 3. **Deploy on AWS with GPU support** (EC2 instances for FLUX/ESRGAN, cloud API for Imagen)
 4. **Integrate with NestJS backend** that will serve as a proxy between frontend and Python API
 5. **Share with supervisor** for testing with both local and cloud options
@@ -391,77 +391,172 @@ Response:
 }
 ```
 
-#### 2.3 Python Executor Service
+#### 2.3 Python Worker Service (Persistent Process)
 
-Service for spawning Python child processes from NestJS:
+Instead of spawning a new Python process per request (which would reload 12GB+ of models each time), we use a **persistent Python worker** that loads models once at startup and accepts jobs via stdin/stdout JSON-line protocol.
 
-**`src/python/python-executor.service.ts`**
+**`python-scripts/worker.py`** (Long-running Python process)
+```python
+import sys
+import json
+import traceback
+from services.flux_upscaler import FluxUpscaler
+from services.esrgan_upscaler import EsrganUpscaler
+from services.imagen_upscaler import ImagenUpscaler
+
+# Load models ONCE at startup
+print(json.dumps({"type": "status", "message": "loading_models"}), flush=True)
+flux = FluxUpscaler()
+esrgan = EsrganUpscaler()
+imagen = ImagenUpscaler()
+print(json.dumps({"type": "status", "message": "ready"}), flush=True)
+
+# Process jobs from stdin (one JSON per line)
+for line in sys.stdin:
+    try:
+        job = json.loads(line.strip())
+        method = job["method"]
+        config = job["config"]
+        job_id = job["job_id"]
+
+        if method == "flux":
+            result = flux.upscale(config)
+        elif method == "esrgan":
+            result = esrgan.upscale(config)
+        elif method == "imagen":
+            result = imagen.upscale(config)
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+        print(json.dumps({
+            "type": "result",
+            "job_id": job_id,
+            "output_path": result["output_path"],
+            "status": "completed"
+        }), flush=True)
+
+    except Exception as e:
+        print(json.dumps({
+            "type": "error",
+            "job_id": job.get("job_id", "unknown"),
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), flush=True)
+```
+
+**`src/python/python-executor.service.ts`** (NestJS side - manages persistent worker)
 ```typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { spawn } from 'child_process';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { spawn, ChildProcess } from 'child_process';
 import { join } from 'path';
+import { createInterface, Interface } from 'readline';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
-export class PythonExecutorService {
+export class PythonExecutorService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PythonExecutorService.name);
-  private readonly pythonPath = process.env.PYTHON_PATH || 'python3';
-  private readonly scriptsPath = join(__dirname, '../../python-scripts');
+  private pythonProcess: ChildProcess;
+  private readline: Interface;
+  private pendingJobs = new Map<string, { resolve: Function; reject: Function }>();
+  private isReady = false;
+
+  async onModuleInit() {
+    await this.startWorker();
+  }
+
+  onModuleDestroy() {
+    this.pythonProcess?.kill();
+  }
+
+  private startWorker(): Promise<void> {
+    return new Promise((resolve) => {
+      const workerPath = join(__dirname, '../../python-scripts/worker.py');
+
+      this.pythonProcess = spawn(
+        process.env.PYTHON_PATH || 'python3',
+        ['-u', workerPath],
+        {
+          env: {
+            ...process.env,
+            PYTHONUNBUFFERED: '1',
+            CUDA_VISIBLE_DEVICES: '0',
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      );
+
+      this.readline = createInterface({ input: this.pythonProcess.stdout });
+
+      this.readline.on('line', (line) => {
+        try {
+          const msg = JSON.parse(line);
+
+          if (msg.type === 'status' && msg.message === 'ready') {
+            this.isReady = true;
+            this.logger.log('Python worker ready - models loaded');
+            resolve();
+            return;
+          }
+
+          if (msg.type === 'result' || msg.type === 'error') {
+            const pending = this.pendingJobs.get(msg.job_id);
+            if (pending) {
+              this.pendingJobs.delete(msg.job_id);
+              if (msg.type === 'result') {
+                pending.resolve(msg.output_path);
+              } else {
+                pending.reject(new Error(msg.error));
+              }
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`Non-JSON from Python: ${line}`);
+        }
+      });
+
+      this.pythonProcess.stderr.on('data', (data) => {
+        this.logger.warn(`Python stderr: ${data}`);
+      });
+
+      this.pythonProcess.on('exit', (code) => {
+        this.logger.error(`Python worker exited with code ${code}`);
+        this.isReady = false;
+        // Auto-restart after 5 seconds
+        setTimeout(() => this.startWorker(), 5000);
+      });
+    });
+  }
 
   async executeUpscaler(
     method: 'flux' | 'esrgan' | 'imagen',
     config: any,
   ): Promise<string> {
+    if (!this.isReady) {
+      throw new Error('Python worker not ready - models still loading');
+    }
+
+    const jobId = uuidv4();
+
     return new Promise((resolve, reject) => {
-      const scriptPath = join(this.scriptsPath, 'run_upscaler.py');
-      const args = [
-        scriptPath,
-        '--method', method,
-        '--config', JSON.stringify(config),
-      ];
+      this.pendingJobs.set(jobId, { resolve, reject });
 
-      this.logger.debug(`Executing Python: ${this.pythonPath} ${args.join(' ')}`);
-
-      const pythonProcess = spawn(this.pythonPath, args, {
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: '1',
-          CUDA_VISIBLE_DEVICES: '0',
-        },
+      const job = JSON.stringify({
+        job_id: jobId,
+        method,
+        config,
       });
 
-      let stdout = '';
-      let stderr = '';
-
-      pythonProcess.stdout.on('data', (data) => {
-        stdout += data.toString();
-        this.logger.debug(`Python stdout: ${data}`);
-      });
-
-      pythonProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
-        this.logger.warn(`Python stderr: ${data}`);
-      });
-
-      pythonProcess.on('close', (code) => {
-        if (code === 0) {
-          try {
-            const result = JSON.parse(stdout);
-            resolve(result.output_path);
-          } catch (err) {
-            reject(new Error(`Failed to parse Python output: ${stdout}`));
-          }
-        } else {
-          reject(new Error(`Python process exited with code ${code}: ${stderr}`));
-        }
-      });
-
-      pythonProcess.on('error', (error) => {
-        reject(new Error(`Failed to spawn Python process: ${error.message}`));
-      });
+      this.pythonProcess.stdin.write(job + '\n');
     });
   }
 }
 ```
+
+**Key benefits over spawn-per-request:**
+- Models loaded once at startup (~30-60s), reused for all requests
+- FLUX (12GB) and ESRGAN models stay in GPU memory
+- Auto-restarts if the worker crashes
+- NestJS tracks pending jobs by ID
 
 #### 2.4 Bull Queue Processors
 
@@ -540,9 +635,11 @@ export class FluxProcessor extends WorkerHost {
 
 ---
 
-### Phase 3: Create Dockerfile with Pre-baked Models (3-4 days)
+### Phase 3: Create Dockerfile (3-4 days)
 
-**Goal**: Build a ~50GB Docker image with CUDA support and all models pre-installed.
+**Goal**: Build Docker image with CUDA support. Two modes:
+- **Production**: Models pre-baked into image (~50GB) — no downloads at startup
+- **Development**: Models mounted via volume (~5GB image) — fast rebuilds, models stored on host
 
 #### 3.1 Dockerfile
 
@@ -685,7 +782,121 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 CMD ["node", "dist/main"]
 ```
 
-#### 3.2 Requirements Files
+#### 3.2 Development Dockerfile (Volume-Mounted Models)
+
+For development, skip the model download stage entirely. Models are mounted from the host machine at runtime.
+
+**File**: `Dockerfile.dev`
+
+```dockerfile
+# ========================================
+# Stage 1: Node.js Builder
+# ========================================
+FROM node:20-slim as node-builder
+
+WORKDIR /build
+COPY package*.json ./
+COPY tsconfig*.json ./
+RUN npm ci
+COPY src/ ./src/
+RUN npm run build
+
+# ========================================
+# Stage 2: Runtime (NO models baked in)
+# ========================================
+FROM nvidia/cuda:12.8.0-cudnn9-runtime-ubuntu24.04
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    curl git libgl1 libglib2.0-0 \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs python3.11 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# NOTE: No COPY --from=model-downloader — models come from volume mount
+
+RUN pip3 install --no-cache-dir --pre \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/nightly/cu128
+
+COPY python-requirements.txt .
+RUN pip3 install --no-cache-dir -r python-requirements.txt
+
+RUN git clone https://github.com/Isi-dev/ComfyUI /app/hf/ComfyUI && \
+    cd /app/hf/ComfyUI/custom_nodes && \
+    git clone https://github.com/Isi-dev/ComfyUI_GGUF && \
+    git clone https://github.com/Isi-dev/ComfyUI_UltimateSDUpscale && \
+    pip3 install --no-cache-dir -r ComfyUI_GGUF/requirements.txt
+
+COPY --from=node-builder /build/dist /app/dist
+COPY --from=node-builder /build/node_modules /app/node_modules
+COPY package*.json /app/
+COPY python-scripts/ /app/python-scripts/
+
+RUN mkdir -p /app/uploads /app/results /app/temp
+
+ENV MODEL_CACHE_DIR=/app/models
+ENV PYTHONPATH=/app/hf/ComfyUI:$PYTHONPATH
+ENV PYTHON_PATH=python3
+
+EXPOSE 3000
+CMD ["node", "dist/main"]
+```
+
+**File**: `docker-compose.dev.yml`
+
+```yaml
+version: '3.8'
+
+services:
+  upscaler-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev          # Uses dev Dockerfile (no models baked in)
+    container_name: upscaler-api-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./hf/models:/app/models           # Mount local models directory
+      - ./results:/app/results
+      - ./uploads:/app/uploads
+      - ./python-scripts:/app/python-scripts  # Live-reload Python scripts
+    environment:
+      - NODE_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MODEL_CACHE_DIR=/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+```
+
+**Usage:**
+```bash
+# Dev mode (uses local models from ./hf/models)
+docker-compose -f docker-compose.dev.yml up -d
+
+# Production mode (models pre-baked)
+docker-compose up -d
+```
+
+Image size comparison:
+- **Production** (`Dockerfile`): ~50GB (models included)
+- **Development** (`Dockerfile.dev`): ~5GB (models on host via volume)
+
+#### 3.3 Requirements Files
 
 **File**: `package.json` (NestJS dependencies)
 
@@ -757,7 +968,7 @@ google-auth>=2.23.0
 google-cloud-aiplatform>=1.38.0
 ```
 
-#### 3.3 Docker Ignore File
+#### 3.4 Docker Ignore File
 
 **File**: `.dockerignore`
 
@@ -910,58 +1121,78 @@ docker-compose up -d --build
 
 ---
 
-### Phase 5: AWS Deployment Setup (2-3 days)
+### Phase 5: VPS / Cloud Deployment Setup (2-3 days)
 
-**Goal**: Deploy to AWS EC2 with GPU support.
+**Goal**: Deploy to a GPU VPS that exposes a REST API your NestJS backend can call.
 
-#### 5.1 AWS Infrastructure
+#### 5.1 GPU VPS Provider Comparison
 
-**Recommended Instance Types:**
+| Provider | GPU | VRAM | Cost/hour | Cost/month (24/7) | API for launch/terminate |
+|----------|-----|------|-----------|-------------------|--------------------------|
+| **Lambda Cloud** | 1x A10 | 24GB | $0.60 | ~$432 | Yes (REST API) |
+| **Lambda Cloud** | 1x A100 | 40GB | $1.10 | ~$792 | Yes (REST API) |
+| AWS EC2 | g5.2xlarge | 24GB | $1.21 | ~$870 | Yes (AWS API) |
+| AWS EC2 | g4dn.xlarge | 16GB | $0.526 | ~$378 | Yes (AWS API) |
+| RunPod | A10 | 24GB | $0.44 | ~$317 | Yes (REST API) |
+| Vast.ai | A10 | 24GB | ~$0.30 | ~$216 | Yes (REST API) |
 
-| Upscaler | Instance Type | VRAM | vCPUs | Cost/hour (us-east-1) |
-|----------|--------------|------|-------|----------------------|
-| FLUX     | g5.2xlarge   | 24GB | 8     | $1.21                |
-| ESRGAN   | g4dn.xlarge  | 16GB | 4     | $0.526               |
-| Imagen   | t3.medium    | N/A  | 2     | $0.0416              |
+**Recommended**: Lambda Cloud `gpu_1x_a10` (24GB, $0.60/hr) — good balance of price, reliability, and API support. 24GB VRAM handles FLUX + ESRGAN simultaneously.
 
-**Choose**: `g5.2xlarge` for supporting all three upscalers
+#### 5.2 Lambda Cloud Deployment (Primary Option)
 
-#### 5.2 EC2 Deployment Steps
+**Lambda Cloud API** — Base URL: `https://cloud.lambdalabs.com/api/v1`
 
-**1. Launch EC2 Instance**
-```bash
-# Use AWS Deep Learning AMI (Ubuntu 24.04)
-aws ec2 run-instances \
-  --image-id ami-0c55b159cbfafe1f0 \
-  --instance-type g5.2xlarge \
-  --key-name your-key-pair \
-  --security-groups upscaler-sg \
-  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=200,VolumeType=gp3}' \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=upscaler-api}]'
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/instance-types` | GET | List available GPU types |
+| `/instances` | GET | List running instances |
+| `/instances/{id}` | GET | Get specific instance |
+| `/instance-operations/launch` | POST | Launch new instance |
+| `/instance-operations/terminate` | POST | Terminate instance |
+| `/instance-operations/restart` | POST | Restart instance |
+| `/ssh-keys` | GET/POST/DELETE | Manage SSH keys |
+
+**Authentication**: Bearer token via `Authorization: Bearer <LAMBDA_API_KEY>`
+
+**1. Launch Config**
+
+```json
+{
+  "region_name": "us-west-1",
+  "instance_type_name": "gpu_1x_a10",
+  "ssh_key_names": ["your-ssh-key"],
+  "file_system_names": [],
+  "quantity": 1
+}
 ```
 
-**2. Security Group Configuration**
-- Port 22 (SSH) - Your IP only
-- Port 8000 (API) - Your IP or load balancer
-- Port 6379 (Redis) - Internal only
-
-**3. Connect and Setup**
+**2. Launch Instance**
 ```bash
-# SSH into instance
-ssh -i your-key.pem ubuntu@ec2-xx-xx-xx-xx.compute-amazonaws.com
+# Set API key
+export LAMBDA_API_KEY="your-api-key"
 
-# Install Docker
-sudo apt-get update
-sudo apt-get install -y docker.io docker-compose
-sudo usermod -aG docker ubuntu
+# Launch GPU instance
+curl -X POST https://cloud.lambdalabs.com/api/v1/instance-operations/launch \
+  -H "Authorization: Bearer $LAMBDA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "region_name": "us-west-1",
+    "instance_type_name": "gpu_1x_a10",
+    "ssh_key_names": ["your-ssh-key"],
+    "quantity": 1
+  }'
 
-# Install nvidia-docker
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.repo | \
-  sudo tee /etc/yum.repos.d/nvidia-docker.repo
-sudo apt-get install -y nvidia-docker2
-sudo systemctl restart docker
+# Check instance status
+curl https://cloud.lambdalabs.com/api/v1/instances \
+  -H "Authorization: Bearer $LAMBDA_API_KEY"
+```
 
+**3. Setup Instance (SSH)**
+```bash
+# SSH into Lambda instance
+ssh ubuntu@<instance-ip>
+
+# Docker and nvidia-docker are pre-installed on Lambda Cloud
 # Verify GPU
 docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
 
@@ -972,50 +1203,120 @@ cd upscaler-api
 # Start services
 docker-compose up -d
 
-# Check logs
-docker-compose logs -f
+# Check health
+curl http://localhost:3000/api/health
 ```
 
-#### 5.3 Model Storage with EFS (Optional)
-
-For persistent model storage across container restarts:
-
-```yaml
-# Add to docker-compose.yml
-volumes:
-  models:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: addr=fs-xxxxx.efs.us-east-1.amazonaws.com,nfsvers=4.1
-      device: ":/models"
+**4. Terminate When Not Needed**
+```bash
+curl -X POST https://cloud.lambdalabs.com/api/v1/instance-operations/terminate \
+  -H "Authorization: Bearer $LAMBDA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"instance_ids": ["<instance-id>"]}'
 ```
 
-#### 5.4 Auto-Scaling Configuration
+#### 5.3 Networking: How Your NestJS Backend Reaches the GPU VPS
 
-**Scale down during off-hours to save costs:**
+Your NestJS backend needs to call the upscaler API running on the GPU VPS. Two approaches:
+
+**Option A: Tailscale (Recommended for security)**
+
+Tailscale creates a private mesh VPN. Your GPU VPS and NestJS backend join the same Tailscale network and communicate over private IPs — no public ports exposed.
 
 ```bash
-# Stop instance at 11 PM
-aws autoscaling put-scheduled-action \
-  --scheduled-action-name scale-down-night \
-  --auto-scaling-group-name upscaler-asg \
-  --recurrence "0 23 * * *" \
-  --desired-capacity 0
+# On GPU VPS (Lambda/AWS/RunPod):
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --authkey=tskey-auth-xxxxx
 
-# Start instance at 6 AM
-aws autoscaling put-scheduled-action \
-  --scheduled-action-name scale-up-morning \
-  --auto-scaling-group-name upscaler-asg \
-  --recurrence "0 6 * * *" \
-  --desired-capacity 1
+# The GPU VPS gets a Tailscale IP like 100.x.x.x
+# Your NestJS backend calls: http://100.x.x.x:3000/api/upscale/esrgan
 ```
+
+In your NestJS backend:
+```typescript
+// .env
+UPSCALER_API_URL=http://100.x.x.x:3000  // Tailscale private IP
+
+// upscaler-proxy.service.ts
+const response = await fetch(`${process.env.UPSCALER_API_URL}/api/upscale/esrgan`, {
+  method: 'POST',
+  body: formData,
+});
+```
+
+**Benefits:**
+- No public ports exposed on GPU VPS
+- Works across any VPS provider (Lambda, AWS, RunPod)
+- Encrypted end-to-end
+- Survives IP changes (Tailscale uses stable IDs)
+
+**Option B: Public IP with API Key Auth**
+
+Expose port 3000 publicly and protect with an API key header.
+
+```bash
+# GPU VPS firewall
+ufw allow 3000/tcp
+```
+
+```typescript
+// On the GPU VPS — add API key guard to NestJS
+@UseGuards(ApiKeyGuard)
+@Controller('api/upscale')
+export class UpscalerController { ... }
+```
+
+```typescript
+// From your main NestJS backend
+const response = await fetch(`http://<gpu-vps-public-ip>:3000/api/upscale/esrgan`, {
+  method: 'POST',
+  headers: { 'X-API-Key': process.env.UPSCALER_API_KEY },
+  body: formData,
+});
+```
+
+#### 5.4 AWS EC2 Alternative
+
+If you prefer AWS:
+
+```bash
+# Launch EC2 g5.2xlarge with Deep Learning AMI
+aws ec2 run-instances \
+  --image-id ami-0c55b159cbfafe1f0 \
+  --instance-type g5.2xlarge \
+  --key-name your-key-pair \
+  --security-groups upscaler-sg \
+  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=200,VolumeType=gp3}'
+
+# Security Group: SSH (22) + API (3000) from your IP only
+# Then SSH in, clone repo, docker-compose up -d
+```
+
+#### 5.5 Programmatic Instance Management (Optional)
+
+Use the Lambda Cloud API from your NestJS backend to auto-launch/terminate GPU instances on demand:
+
+```bash
+# Install Lambda Cloud Manager CLI
+pip install git+https://github.com/joehoover/lambda-cloud-manager.git
+
+# List available GPUs
+lcm get-instance-types
+
+# Launch from config
+lcm launch ./configs/a10.json --name upscaler-prod
+
+# Terminate
+lcm terminate --name upscaler-prod
+```
+
+This lets you build a "spin up on first request, spin down after idle" pattern to save costs.
 
 ---
 
-### Phase 6: Complete NestJS Implementation (Already Done in Phase 2)
+### Phase 6: NestJS Controller Details (Reference for Phase 2)
 
-Since NestJS is now the primary backend (see Phase 2), this phase focuses on additional controller implementations.
+> **Note**: This phase is merged into Phase 2. The controller code below is part of the NestJS application built in Phase 2.
 
 #### 6.1 Complete Controller Implementation
 
@@ -1239,10 +1540,10 @@ supervisor-test-package/
 4. **Test the API**
    ```bash
    # Check health
-   curl http://localhost:8000/api/health
+   curl http://localhost:3000/api/health
 
    # Test ESRGAN upscale (fast - 30-60 seconds)
-   curl -X POST http://localhost:8000/api/upscale/esrgan \
+   curl -X POST http://localhost:3000/api/upscale/esrgan \
      -F "image=@test-images/sample1.jpg" \
      -F "target_width=3000" \
      -F "target_height=1500" \
@@ -1251,7 +1552,7 @@ supervisor-test-package/
 
 5. **Access Swagger UI**
 
-   Open browser: http://localhost:8000/docs
+   Open browser: http://localhost:3000/docs
 
 6. **View logs**
    ```bash
@@ -1282,11 +1583,11 @@ echo "Testing Upscaler API..."
 
 # Health check
 echo "1. Health Check"
-curl -s http://localhost:8000/api/health | jq
+curl -s http://localhost:3000/api/health | jq
 
 # ESRGAN upscale test
 echo -e "\n2. ESRGAN Upscale Test"
-RESPONSE=$(curl -s -X POST http://localhost:8000/api/upscale/esrgan \
+RESPONSE=$(curl -s -X POST http://localhost:3000/api/upscale/esrgan \
   -F "image=@test-images/sample1.jpg" \
   -F "target_width=2000" \
   -F "target_height=1000" \
@@ -1299,7 +1600,7 @@ TASK_ID=$(echo $RESPONSE | jq -r '.task_id')
 # Poll status
 echo -e "\n3. Checking Status"
 while true; do
-  STATUS=$(curl -s http://localhost:8000/api/status/$TASK_ID | jq -r '.status')
+  STATUS=$(curl -s http://localhost:3000/api/status/$TASK_ID | jq -r '.status')
   echo "Status: $STATUS"
 
   if [ "$STATUS" == "completed" ]; then
@@ -1316,14 +1617,15 @@ done
 echo -e "\n✓ All tests passed!"
 ```
 
-#### 7.2 AWS Cloud Testing (If no local GPU)
+#### 7.2 Cloud Testing (If no local GPU)
 
 **Temporary deployment** for supervisor testing:
 
-1. Deploy to AWS EC2 (see Phase 5)
-2. Share public IP: `http://ec2-xx-xx-xx-xx.compute-amazonaws.com:8000`
-3. Provide Swagger UI link: `http://ec2-xx-xx-xx-xx.compute-amazonaws.com:8000/docs`
+1. Launch Lambda Cloud A10 instance (see Phase 5.2)
+2. Deploy with `docker-compose up -d`
+3. Share access via Tailscale invite or public IP: `http://<instance-ip>:3000`
 4. Include Postman collection for easy testing
+5. Terminate instance after testing to avoid charges
 
 ---
 
@@ -1345,7 +1647,7 @@ echo -e "\n✓ All tests passed!"
 
 4. **`C:\Users\Armaan\Desktop\Artinafti\requirements.txt`**
    - Use as base for Docker requirements.txt
-   - Add FastAPI, Celery, Redis packages
+   - Add BullMQ, Redis packages (NestJS side)
 
 5. **`C:\Users\Armaan\Desktop\Artinafti\.gitignore`**
    - Reference for .dockerignore patterns
@@ -1357,14 +1659,14 @@ echo -e "\n✓ All tests passed!"
 | Phase | Task | Duration | Dependencies |
 |-------|------|----------|--------------|
 | 1 | Extract upscaling logic from notebooks | 2-3 days | - |
-| 2 | Build FastAPI application | 2-3 days | Phase 1 |
+| 2 | Build NestJS application + Python scripts | 3-4 days | Phase 1 |
 | 3 | Create Dockerfile (first build takes 1-2 hours) | 3-4 days | Phase 2 |
 | 4 | Docker Compose for local testing | 1 day | Phase 3 |
-| 5 | AWS deployment setup | 2-3 days | Phase 4 |
-| 6 | NestJS backend integration | 2 days | Phase 5 |
-| 7 | Supervisor testing package | 1 day | Phase 6 |
+| 5 | VPS/Cloud deployment setup | 2-3 days | Phase 4 |
+| 6 | *(Merged into Phase 2)* | 0 days | - |
+| 7 | Supervisor testing package | 1 day | Phase 5 |
 
-**Total Estimated Time**: 13-18 days
+**Total Estimated Time**: 11-15 days
 
 ---
 
@@ -1385,7 +1687,7 @@ echo -e "\n✓ All tests passed!"
 
 3. **Test ESRGAN endpoint (fast)**
    ```bash
-   curl -X POST http://localhost:8000/api/upscale/esrgan \
+   curl -X POST http://localhost:3000/api/upscale/esrgan \
      -F "image=@input/test.jpg" \
      -F "target_width=2000" \
      -F "target_height=1000"
@@ -1394,7 +1696,7 @@ echo -e "\n✓ All tests passed!"
 
 4. **Test FLUX endpoint (slow)**
    ```bash
-   curl -X POST http://localhost:8000/api/upscale/flux \
+   curl -X POST http://localhost:3000/api/upscale/flux \
      -F "image=@input/test.jpg" \
      -F "target_width=3000" \
      -F "target_height=1500"
@@ -1403,7 +1705,7 @@ echo -e "\n✓ All tests passed!"
 
 5. **Test Imagen endpoint (cloud)**
    ```bash
-   curl -X POST http://localhost:8000/api/upscale/imagen \
+   curl -X POST http://localhost:3000/api/upscale/imagen \
      -F "image=@input/test.jpg" \
      -F "target_width=2000" \
      -F "target_height=1000" \
@@ -1413,7 +1715,7 @@ echo -e "\n✓ All tests passed!"
 
 6. **Check Swagger UI**
 
-   Open: http://localhost:8000/docs
+   Open: http://localhost:3000/docs
 
    Test all endpoints interactively
 
@@ -1425,7 +1727,7 @@ echo -e "\n✓ All tests passed!"
 
 2. **Test remote API**
    ```bash
-   curl http://ec2-xx-xx-xx-xx.compute-amazonaws.com:8000/api/health
+   curl http://ec2-xx-xx-xx-xx.compute-amazonaws.com:3000/api/health
    ```
 
 3. **Load test**
@@ -1460,34 +1762,39 @@ echo -e "\n✓ All tests passed!"
 
 ## Notes
 
-- **Docker image size**: ~50GB (models pre-baked)
-- **First startup**: 30-60 seconds to load models into GPU
+- **Docker image size**: ~50GB production (models pre-baked), ~5GB dev (volume-mounted models)
+- **First startup**: 30-60 seconds for persistent Python worker to load models into GPU
 - **GPU memory**: 16GB required for FLUX, 8GB for ESRGAN
-- **FLUX processing**: 10-40 minutes per image (async with Celery)
+- **FLUX processing**: 10-40 minutes per image (async with Bull queue)
 - **ESRGAN processing**: 10-100 seconds per image
 - **Imagen processing**: 15-20 seconds per image (cloud API)
 - **Concurrent requests**: Limited to 1 FLUX task at a time (GPU memory)
-- **Model updates**: Rebuild Docker image or use volume mounts
+- **Model updates**: Rebuild Docker image (prod) or update host files (dev)
+- **Networking**: Tailscale for private VPN, or public IP with API key auth
 
 ---
 
-## Cost Estimates (AWS)
+## Cost Estimates
 
-- **g5.2xlarge**: $1.21/hour (~$870/month if running 24/7)
-- **Spot instance**: ~$0.40/hour (70% savings, may be interrupted)
-- **EFS storage**: $0.08/GB-month for model cache (~$4/month for 50GB)
-- **Data transfer**: $0.09/GB after first 100GB
+| Provider | GPU | Cost/hour | Cost/month (24/7) | Notes |
+|----------|-----|-----------|-------------------|-------|
+| Lambda Cloud | 1x A10 (24GB) | $0.60 | ~$432 | Pre-installed Docker + NVIDIA |
+| RunPod | A10 (24GB) | $0.44 | ~$317 | Cheapest reliable option |
+| Vast.ai | A10 (24GB) | ~$0.30 | ~$216 | Community GPUs, less reliable |
+| AWS EC2 | g5.2xlarge (24GB) | $1.21 | ~$870 | Most enterprise features |
+| AWS Spot | g5.2xlarge | ~$0.40 | ~$288 | 70% savings, may interrupt |
 
-**Recommended**: Use scheduled scaling to shut down during off-hours (nights/weekends)
+**Recommended for always-on**: Lambda Cloud A10 at $432/month
+**Recommended for budget**: Use Lambda Cloud API to launch on demand, terminate when idle
 
 ---
 
 ## Next Steps After Implementation
 
-1. **Add authentication** (API keys, JWT)
+1. **Add API key authentication** (protect upscaler endpoints)
 2. **Add rate limiting** (prevent abuse)
-3. **Set up monitoring** (Prometheus, Grafana)
-4. **Configure CloudWatch alerts** (GPU utilization, API errors)
-5. **Implement webhooks** (notify when processing completes)
-6. **Add S3 integration** (store results in S3 instead of local disk)
-7. **Create admin dashboard** (view queue, cancel jobs, monitor costs)
+3. **Set up Tailscale** for secure networking between backend and GPU VPS
+4. **Implement webhooks** (notify when processing completes)
+5. **Add S3/cloud storage** (store results instead of local disk)
+6. **Auto-scaling** (use Lambda/RunPod API to launch/terminate on demand)
+7. **Monitoring** (GPU utilization, queue depth, API latency)
