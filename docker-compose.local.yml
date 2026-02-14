@@ -1,0 +1,14 @@
+
+# Override for LOCAL development when you already have models at ./hf/models
+# Usage: docker-compose -f docker-compose.dev.yml -f docker-compose.local.yml up -d
+#
+# This mounts your existing local models instead of using the Docker volume,
+# so no download is needed.
+
+services:
+  upscaler-api:
+    volumes:
+      - ./hf/models:/app/models              # Use existing local models
+      - ./results:/app/results
+      - ./uploads:/app/uploads
+      - ./python-scripts:/app/python-scripts

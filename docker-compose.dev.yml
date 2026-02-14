@@ -1,0 +1,60 @@
+
+services:
+  upscaler-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: upscaler-api-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - upscaler-models:/app/models           # Persistent models volume (auto-downloaded on first run)
+      - ./results:/app/results                # Persist output images
+      - ./uploads:/app/uploads                # Persist uploaded images
+      - ./python-scripts:/app/python-scripts  # Live-reload Python scripts
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MODEL_CACHE_DIR=/app/models
+      - OUTPUT_DIR=/app/results
+      - UPLOAD_DIR=/app/uploads
+      - PYTHON_PATH=python3
+      - PYTHONPATH=/app/hf/ComfyUI
+      - COMFYUI_DIR=/app/hf/ComfyUI
+      - CUDA_VISIBLE_DEVICES=0
+      - MAX_CONCURRENT_JOBS=1
+      - DEFAULT_DPI=150
+      - DEFAULT_UPSCALE_FACTOR=4
+      - GCP_PROJECT_ID=artinafti
+      - GCP_REGION=us-central1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: upscaler-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+
+volumes:
+  redis-data:
+  upscaler-models:    # Persists downloaded models across container rebuilds (~18GB)
