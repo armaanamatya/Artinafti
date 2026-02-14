@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+
+# Jupyter
+*.ipynb_checkpoints/
+*.ipynb
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Project specific
+4xoutput/
+input/
+output/
+drive-download-*/
+
+# Documentation
+compare.md
+workflow.md
+upscaling_research_report.md
+imagenplan.md
+imagenguide.md
+initialresearch.md
+dockersetup.md
+changelogdocker.md
+ARCHITECTURE_CHANGES.md
+NOTEBOOK_GUIDE.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.env
+*.env.*
+*credentials*.json
+*secret*.json
+
+# Build artifacts
+dist/
+build/
+node_modules/
+
+# Models (mounted via volume in dev)
+hf/
+
+# Claude
+.claude/
+nul

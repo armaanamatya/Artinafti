@@ -1,0 +1,32 @@
+# AI/ML frameworks
+diffusers>=0.30.0
+accelerate>=1.0.0
+transformers>=4.28.1
+einops>=0.8.0
+safetensors>=0.4.0
+sentencepiece>=0.2.0
+spandrel>=0.4.0
+gguf>=0.13.0
+torchsde>=0.2.6
+
+# Image processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+
+# HuggingFace
+huggingface-hub>=0.20.0
+
+# Google Cloud (for Imagen)
+google-auth>=2.23.0
+google-cloud-aiplatform>=1.38.0
+requests>=2.31.0
+
+# Utilities
+numpy>=1.24.0
+psutil>=5.9.0
+tqdm>=4.66.0
+pyyaml>=6.0
+aiohttp>=3.9.0
+omegaconf>=2.3.0

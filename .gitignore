@@ -11,3 +11,4 @@ output/
 *credentials*.json
 *secret*.json
 .claude/
+node_modules/
