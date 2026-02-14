@@ -21,6 +21,8 @@ export class PythonExecutorService implements OnModuleInit, OnModuleDestroy {
   private readline: Interface;
   private pendingJobs = new Map<string, PendingJob>();
   private isReady = false;
+  private restartAttempts = 0;
+  private readonly maxRestartAttempts = 3;
 
   async onModuleInit() {
     await this.startWorker();
@@ -101,8 +103,18 @@ export class PythonExecutorService implements OnModuleInit, OnModuleDestroy {
           this.pendingJobs.delete(jobId);
         }
 
-        // Auto-restart after 5 seconds
-        setTimeout(() => this.startWorker(), 5000);
+        // Resolve startup promise so NestJS can finish booting
+        resolve();
+
+        // Auto-restart with retry limit
+        this.restartAttempts++;
+        if (this.restartAttempts < this.maxRestartAttempts) {
+          setTimeout(() => this.startWorker(), 5000);
+        } else {
+          this.logger.warn(
+            `Python worker failed ${this.maxRestartAttempts} times — stopping retries. Install Python deps or run in Docker.`,
+          );
+        }
       });
 
       // Timeout for initial startup (models can take 30-60s to load)
