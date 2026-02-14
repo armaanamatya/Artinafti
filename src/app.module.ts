@@ -7,6 +7,7 @@ import configuration from './config/configuration';
 import { UpscalerModule } from './upscaler/upscaler.module';
 import { PythonModule } from './python/python.module';
 import { HealthModule } from './health/health.module';
+import { LambdaModule } from './lambda/lambda.module';
 
 @Module({
   imports: [
@@ -24,9 +25,15 @@ import { HealthModule } from './health/health.module';
       rootPath: join(process.env.OUTPUT_DIR || '/app/results'),
       serveRoot: '/api/results',
     }),
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'src', 'public'),
+      serveRoot: '/',
+      exclude: ['/api/(.*)'],
+    }),
     UpscalerModule,
     PythonModule,
     HealthModule,
+    LambdaModule,
   ],
 })
 export class AppModule {}

@@ -17,4 +17,10 @@ export default () => ({
     projectId: process.env.GCP_PROJECT_ID || 'artinafti',
     region: process.env.GCP_REGION || 'us-central1',
   },
+  lambda: {
+    apiKey: process.env.LAMBDA_API_KEY || '',
+    sshKeyName: process.env.LAMBDA_SSH_KEY_NAME || '',
+    defaultRegion: process.env.LAMBDA_DEFAULT_REGION || 'us-east-1',
+    repoUrl: process.env.LAMBDA_REPO_URL || '',
+  },
 });
