@@ -867,6 +867,7 @@ launchBtn.addEventListener('click', async () => {
     const ids = data.instance_ids || [data.instance_id];
     state.instanceId = ids[0];
     toast(`Instance ${state.instanceId} launched`, 'success');
+    saveState();
 
     setGpuStatus('polling');
     pollInstanceStatus();
@@ -886,9 +887,29 @@ function pollInstanceStatus() {
       if (data.status === 'active' && data.ip) {
         clearInterval(state.pollTimer);
         state.instanceIp = data.ip;
-        setGpuStatus('ready', `<strong>${data.ip}</strong> <span class="cost-tag">$${instanceTypeSelect.selectedOptions[0]?.dataset.price || '?'}/hr</span>`);
-        runBtn.disabled = !state.selectedFile;
-        toast('GPU instance ready', 'success');
+        saveState();
+
+        // Auto-deploy
+        setGpuStatus('deploying', data.ip);
+        toast('Instance active — deploying stack...', 'success');
+
+        try {
+          const deployResult = await api(`/api/gpu/deploy/${state.instanceId}`, { method: 'POST' });
+          if (deployResult.success) {
+            setGpuStatus('ready', `<strong>${data.ip}</strong> <span class="cost-tag">$${instanceTypeSelect.selectedOptions[0]?.dataset.price || '?'}/hr</span>`);
+            runBtn.disabled = !state.selectedFile;
+            toast('Deploy complete — ready to upscale', 'success');
+          } else {
+            setGpuStatus('active', `<strong>${data.ip}</strong> — deploy failed, try manually`);
+            toast('Deploy had issues: ' + (deployResult.error || 'unknown'), 'error');
+          }
+        } catch (e) {
+          // Deploy failed but instance is still active — allow manual use
+          setGpuStatus('active', `<strong>${data.ip}</strong> — deploy failed`);
+          toast('Auto-deploy failed: ' + e.message, 'error');
+          runBtn.disabled = !state.selectedFile;
+        }
+        saveState();
       } else {
         setGpuStatus('polling', data.status || '');
       }
@@ -914,6 +935,7 @@ terminateBtn.addEventListener('click', async () => {
     state.instanceId = null;
     state.instanceIp = null;
     setGpuStatus('idle');
+    localStorage.removeItem('artinafti_state');
     toast('Instance terminated', 'success');
   } catch {
     toast('Failed to terminate', 'error');
@@ -1118,8 +1140,44 @@ function pollJobStatus() {
   }, 3000);
 }
 
+// ── STATE PERSISTENCE ──
+function saveState() {
+  const persist = {
+    instanceId: state.instanceId,
+    instanceIp: state.instanceIp,
+    gpuStatus: state.gpuStatus,
+    activeModel: state.activeModel,
+  };
+  localStorage.setItem('artinafti_state', JSON.stringify(persist));
+}
+
+function restoreState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('artinafti_state') || '{}');
+    if (!saved.instanceId) return;
+
+    state.instanceId = saved.instanceId;
+    state.instanceIp = saved.instanceIp;
+    state.activeModel = saved.activeModel || 'esrgan';
+
+    // Restore model tab
+    document.querySelectorAll('.model-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.model === state.activeModel);
+    });
+    document.querySelectorAll('[id^="params-"]').forEach(p => p.style.display = 'none');
+    $(`params-${state.activeModel}`).style.display = '';
+
+    // Re-check instance status
+    if (saved.instanceId) {
+      setGpuStatus('polling', 'Reconnecting…');
+      pollInstanceStatus();
+    }
+  } catch {}
+}
+
 // ── INIT ──
 loadInstanceTypes();
+restoreState();
 </script>
 </body>
 </html>

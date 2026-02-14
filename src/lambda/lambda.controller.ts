@@ -37,15 +37,12 @@ export class LambdaController {
   }
 
   @Post('deploy/:instanceId')
-  async deployToInstance(
-    @Param('instanceId') instanceId: string,
-    @Body('ssh_key_path') sshKeyPath: string,
-  ) {
+  async deployToInstance(@Param('instanceId') instanceId: string) {
     const instance = await this.lambdaService.getInstance(instanceId);
     if (!instance.ip) {
       return { success: false, error: 'Instance does not have an IP yet' };
     }
-    return this.lambdaService.deployToInstance(instance.ip, sshKeyPath);
+    return this.lambdaService.deployToInstance(instance.ip);
   }
 
   @Post('terminate')

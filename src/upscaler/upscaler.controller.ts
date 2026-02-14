@@ -30,7 +30,7 @@ const uploadStorage = diskStorage({
 
 const fileValidators = new ParseFilePipe({
   validators: [
-    new FileTypeValidator({ fileType: /(png|jpe?g|jpeg|webp)/ }),
+    new FileTypeValidator({ fileType: /^image\/(png|jpeg|webp)$/ }),
     new MaxFileSizeValidator({ maxSize: 50 * 1024 * 1024 }), // 50MB
   ],
 });

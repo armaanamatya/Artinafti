@@ -10,11 +10,13 @@ export class LambdaService {
   private readonly apiKey: string;
   private readonly sshKeyName: string;
   private readonly defaultRegion: string;
+  private readonly sshKeyPath: string;
 
   constructor(private readonly configService: ConfigService) {
     this.apiKey = this.configService.get<string>('lambda.apiKey');
     this.sshKeyName = this.configService.get<string>('lambda.sshKeyName');
     this.defaultRegion = this.configService.get<string>('lambda.defaultRegion');
+    this.sshKeyPath = process.env.LAMBDA_SSH_KEY_PATH || '';
   }
 
   private get headers() {
@@ -135,7 +137,8 @@ export class LambdaService {
     return body.data;
   }
 
-  async deployToInstance(instanceIp: string, sshKeyPath: string) {
+  async deployToInstance(instanceIp: string) {
+    const sshKeyPath = this.sshKeyPath;
     const ssh = new NodeSSH();
 
     this.logger.log(`Deploying to ${instanceIp}...`);
