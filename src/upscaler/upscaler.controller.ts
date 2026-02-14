@@ -8,7 +8,6 @@ import {
   Body,
   Res,
   ParseFilePipe,
-  FileTypeValidator,
   MaxFileSizeValidator,
   NotFoundException,
 } from '@nestjs/common';
@@ -30,7 +29,6 @@ const uploadStorage = diskStorage({
 
 const fileValidators = new ParseFilePipe({
   validators: [
-    new FileTypeValidator({ fileType: /^image\/(png|jpeg|webp)$/ }),
     new MaxFileSizeValidator({ maxSize: 50 * 1024 * 1024 }), // 50MB
   ],
 });
