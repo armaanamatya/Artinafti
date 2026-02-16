@@ -8,7 +8,12 @@ import {
   StopInstancesCommand,
   TerminateInstancesCommand,
   DescribeInstanceTypesCommand,
+  CreateImageCommand,
+  DescribeImagesCommand,
+  DeregisterImageCommand,
+  DeleteSnapshotCommand,
   waitUntilInstanceRunning,
+  waitUntilInstanceStopped,
 } from '@aws-sdk/client-ec2';
 
 @Injectable()
@@ -290,6 +295,187 @@ echo "=== Startup complete $(date) ==="
     } catch (error) {
       throw new HttpException(
         `Terminate failed: ${error.message}`,
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /**
+   * Shelve: snapshot the instance into an AMI, then terminate it.
+   * Result: $0 compute, ~$0.05/GB/month for snapshot storage only.
+   * Returns the AMI ID needed to restore later.
+   */
+  async shelveInstance(instanceId: string) {
+    this.logger.log(`Shelving instance ${instanceId}...`);
+
+    // 1. Stop the instance first (required for a clean snapshot)
+    const instance = await this.getInstance(instanceId);
+    if (instance.state === 'running') {
+      await this.stopInstances([instanceId]);
+      await waitUntilInstanceStopped(
+        { client: this.ec2, maxWaitTime: 300 },
+        { InstanceIds: [instanceId] },
+      );
+    }
+
+    // 2. Create an AMI (snapshot)
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const amiName = `artinafti-shelved-${timestamp}`;
+
+    const createImageCmd = new CreateImageCommand({
+      InstanceId: instanceId,
+      Name: amiName,
+      Description: 'Shelved artinafti GPU instance',
+      TagSpecifications: [
+        {
+          ResourceType: 'image',
+          Tags: [
+            { Key: 'Project', Value: 'artinafti' },
+            { Key: 'ShelvedFrom', Value: instanceId },
+          ],
+        },
+      ],
+    });
+
+    try {
+      const amiResult = await this.ec2.send(createImageCmd);
+      const amiId = amiResult.ImageId;
+
+      this.logger.log(`Created AMI ${amiId}, terminating instance...`);
+
+      // 3. Terminate the instance (no more EBS charges)
+      await this.terminateInstances([instanceId]);
+
+      return {
+        ami_id: amiId,
+        ami_name: amiName,
+        shelved_from: instanceId,
+        message:
+          'Instance terminated. Use the ami_id with /api/aws-gpu/restore to launch a new instance from this snapshot.',
+      };
+    } catch (error) {
+      throw new HttpException(
+        `Shelve failed: ${error.message}`,
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /**
+   * Restore: launch a new instance from a previously shelved AMI.
+   * Models, Docker images, and all disk state are preserved in the snapshot.
+   */
+  async restoreInstance(amiId: string, name?: string, instanceType?: string) {
+    const type = instanceType || this.instanceType;
+
+    this.logger.log(`Restoring from AMI ${amiId} as ${type}...`);
+
+    const command = new RunInstancesCommand({
+      ImageId: amiId,
+      InstanceType: type as any,
+      KeyName: this.keyName,
+      SecurityGroupIds: this.securityGroupIds,
+      SubnetId: this.subnetId || undefined,
+      MinCount: 1,
+      MaxCount: 1,
+      UserData: this.buildUserData(),
+      TagSpecifications: [
+        {
+          ResourceType: 'instance',
+          Tags: [
+            { Key: 'Name', Value: name || 'artinafti-gpu' },
+            { Key: 'Project', Value: 'artinafti' },
+            { Key: 'RestoredFrom', Value: amiId },
+          ],
+        },
+      ],
+    });
+
+    try {
+      const result = await this.ec2.send(command);
+      const instance = result.Instances?.[0];
+
+      return {
+        instance_id: instance?.InstanceId,
+        instance_type: instance?.InstanceType,
+        state: instance?.State?.Name,
+        restored_from: amiId,
+      };
+    } catch (error) {
+      throw new HttpException(
+        `Restore failed: ${error.message}`,
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /**
+   * List shelved AMIs (snapshots available for restore).
+   */
+  async listShelved() {
+    const command = new DescribeImagesCommand({
+      Owners: ['self'],
+      Filters: [
+        {
+          Name: 'tag:Project',
+          Values: ['artinafti'],
+        },
+      ],
+    });
+
+    try {
+      const result = await this.ec2.send(command);
+      return (result.Images || []).map((img) => ({
+        ami_id: img.ImageId,
+        name: img.Name,
+        state: img.State,
+        created: img.CreationDate,
+        shelved_from: img.Tags?.find((t) => t.Key === 'ShelvedFrom')?.Value,
+      }));
+    } catch (error) {
+      throw new HttpException(
+        `Failed to list shelved AMIs: ${error.message}`,
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /**
+   * Delete a shelved AMI and its backing snapshots to stop all charges.
+   */
+  async deleteShelved(amiId: string) {
+    this.logger.log(`Deleting shelved AMI ${amiId}...`);
+
+    try {
+      // Get the snapshot IDs backing this AMI
+      const describeCmd = new DescribeImagesCommand({
+        ImageIds: [amiId],
+      });
+      const imageResult = await this.ec2.send(describeCmd);
+      const snapshotIds = (
+        imageResult.Images?.[0]?.BlockDeviceMappings || []
+      )
+        .map((b) => b.Ebs?.SnapshotId)
+        .filter(Boolean);
+
+      // Deregister the AMI
+      await this.ec2.send(new DeregisterImageCommand({ ImageId: amiId }));
+
+      // Delete backing snapshots
+      for (const snapId of snapshotIds) {
+        await this.ec2.send(
+          new DeleteSnapshotCommand({ SnapshotId: snapId }),
+        );
+      }
+
+      return {
+        deleted_ami: amiId,
+        deleted_snapshots: snapshotIds,
+        message: 'AMI and snapshots deleted. Storage charges stopped.',
+      };
+    } catch (error) {
+      throw new HttpException(
+        `Delete failed: ${error.message}`,
         HttpStatus.BAD_GATEWAY,
       );
     }

@@ -1,5 +1,5 @@
 import { AwsGpuService } from './aws-gpu.service';
-import { LaunchAwsInstanceDto, InstanceIdsDto } from './dto/aws-gpu.dto';
+import { LaunchAwsInstanceDto, InstanceIdsDto, RestoreInstanceDto } from './dto/aws-gpu.dto';
 export declare class AwsGpuController {
     private readonly awsGpuService;
     constructor(awsGpuService: AwsGpuService);
@@ -60,5 +60,29 @@ export declare class AwsGpuController {
         private_ip: string;
         launch_time: Date;
         tags: import("@aws-sdk/client-ec2").Tag[];
+    }>;
+    shelveInstance(instanceId: string): Promise<{
+        ami_id: string;
+        ami_name: string;
+        shelved_from: string;
+        message: string;
+    }>;
+    restoreInstance(dto: RestoreInstanceDto): Promise<{
+        instance_id: string;
+        instance_type: import("@aws-sdk/client-ec2")._InstanceType;
+        state: import("@aws-sdk/client-ec2").InstanceStateName;
+        restored_from: string;
+    }>;
+    listShelved(): Promise<{
+        ami_id: string;
+        name: string;
+        state: import("@aws-sdk/client-ec2").ImageState;
+        created: string;
+        shelved_from: string;
+    }[]>;
+    deleteShelved(amiId: string): Promise<{
+        deleted_ami: string;
+        deleted_snapshots: string[];
+        message: string;
     }>;
 }

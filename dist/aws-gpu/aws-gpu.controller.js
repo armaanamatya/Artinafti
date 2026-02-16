@@ -44,6 +44,18 @@ let AwsGpuController = class AwsGpuController {
     async waitForRunning(instanceId) {
         return this.awsGpuService.waitForRunning(instanceId);
     }
+    async shelveInstance(instanceId) {
+        return this.awsGpuService.shelveInstance(instanceId);
+    }
+    async restoreInstance(dto) {
+        return this.awsGpuService.restoreInstance(dto.ami_id, dto.name, dto.instance_type);
+    }
+    async listShelved() {
+        return this.awsGpuService.listShelved();
+    }
+    async deleteShelved(amiId) {
+        return this.awsGpuService.deleteShelved(amiId);
+    }
 };
 exports.AwsGpuController = AwsGpuController;
 __decorate([
@@ -100,6 +112,33 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", Promise)
 ], AwsGpuController.prototype, "waitForRunning", null);
+__decorate([
+    (0, common_1.Post)('shelve/:instanceId'),
+    __param(0, (0, common_1.Param)('instanceId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], AwsGpuController.prototype, "shelveInstance", null);
+__decorate([
+    (0, common_1.Post)('restore'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [aws_gpu_dto_1.RestoreInstanceDto]),
+    __metadata("design:returntype", Promise)
+], AwsGpuController.prototype, "restoreInstance", null);
+__decorate([
+    (0, common_1.Get)('shelved'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], AwsGpuController.prototype, "listShelved", null);
+__decorate([
+    (0, common_1.Post)('shelved/delete/:amiId'),
+    __param(0, (0, common_1.Param)('amiId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], AwsGpuController.prototype, "deleteShelved", null);
 exports.AwsGpuController = AwsGpuController = __decorate([
     (0, common_1.Controller)('api/aws-gpu'),
     __metadata("design:paramtypes", [aws_gpu_service_1.AwsGpuService])

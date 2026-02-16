@@ -3,6 +3,7 @@ import { AwsGpuService } from './aws-gpu.service';
 import {
   LaunchAwsInstanceDto,
   InstanceIdsDto,
+  RestoreInstanceDto,
 } from './dto/aws-gpu.dto';
 
 @Controller('api/aws-gpu')
@@ -47,5 +48,31 @@ export class AwsGpuController {
   @Post('wait/:instanceId')
   async waitForRunning(@Param('instanceId') instanceId: string) {
     return this.awsGpuService.waitForRunning(instanceId);
+  }
+
+  // --- Shelve/Restore (true $0 idle cost) ---
+
+  @Post('shelve/:instanceId')
+  async shelveInstance(@Param('instanceId') instanceId: string) {
+    return this.awsGpuService.shelveInstance(instanceId);
+  }
+
+  @Post('restore')
+  async restoreInstance(@Body() dto: RestoreInstanceDto) {
+    return this.awsGpuService.restoreInstance(
+      dto.ami_id,
+      dto.name,
+      dto.instance_type,
+    );
+  }
+
+  @Get('shelved')
+  async listShelved() {
+    return this.awsGpuService.listShelved();
+  }
+
+  @Post('shelved/delete/:amiId')
+  async deleteShelved(@Param('amiId') amiId: string) {
+    return this.awsGpuService.deleteShelved(amiId);
   }
 }

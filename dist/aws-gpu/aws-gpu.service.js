@@ -242,6 +242,130 @@ echo "=== Startup complete $(date) ==="
             throw new common_1.HttpException(`Terminate failed: ${error.message}`, common_1.HttpStatus.BAD_GATEWAY);
         }
     }
+    async shelveInstance(instanceId) {
+        this.logger.log(`Shelving instance ${instanceId}...`);
+        const instance = await this.getInstance(instanceId);
+        if (instance.state === 'running') {
+            await this.stopInstances([instanceId]);
+            await (0, client_ec2_1.waitUntilInstanceStopped)({ client: this.ec2, maxWaitTime: 300 }, { InstanceIds: [instanceId] });
+        }
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const amiName = `artinafti-shelved-${timestamp}`;
+        const createImageCmd = new client_ec2_1.CreateImageCommand({
+            InstanceId: instanceId,
+            Name: amiName,
+            Description: 'Shelved artinafti GPU instance',
+            TagSpecifications: [
+                {
+                    ResourceType: 'image',
+                    Tags: [
+                        { Key: 'Project', Value: 'artinafti' },
+                        { Key: 'ShelvedFrom', Value: instanceId },
+                    ],
+                },
+            ],
+        });
+        try {
+            const amiResult = await this.ec2.send(createImageCmd);
+            const amiId = amiResult.ImageId;
+            this.logger.log(`Created AMI ${amiId}, terminating instance...`);
+            await this.terminateInstances([instanceId]);
+            return {
+                ami_id: amiId,
+                ami_name: amiName,
+                shelved_from: instanceId,
+                message: 'Instance terminated. Use the ami_id with /api/aws-gpu/restore to launch a new instance from this snapshot.',
+            };
+        }
+        catch (error) {
+            throw new common_1.HttpException(`Shelve failed: ${error.message}`, common_1.HttpStatus.BAD_GATEWAY);
+        }
+    }
+    async restoreInstance(amiId, name, instanceType) {
+        const type = instanceType || this.instanceType;
+        this.logger.log(`Restoring from AMI ${amiId} as ${type}...`);
+        const command = new client_ec2_1.RunInstancesCommand({
+            ImageId: amiId,
+            InstanceType: type,
+            KeyName: this.keyName,
+            SecurityGroupIds: this.securityGroupIds,
+            SubnetId: this.subnetId || undefined,
+            MinCount: 1,
+            MaxCount: 1,
+            UserData: this.buildUserData(),
+            TagSpecifications: [
+                {
+                    ResourceType: 'instance',
+                    Tags: [
+                        { Key: 'Name', Value: name || 'artinafti-gpu' },
+                        { Key: 'Project', Value: 'artinafti' },
+                        { Key: 'RestoredFrom', Value: amiId },
+                    ],
+                },
+            ],
+        });
+        try {
+            const result = await this.ec2.send(command);
+            const instance = result.Instances?.[0];
+            return {
+                instance_id: instance?.InstanceId,
+                instance_type: instance?.InstanceType,
+                state: instance?.State?.Name,
+                restored_from: amiId,
+            };
+        }
+        catch (error) {
+            throw new common_1.HttpException(`Restore failed: ${error.message}`, common_1.HttpStatus.BAD_GATEWAY);
+        }
+    }
+    async listShelved() {
+        const command = new client_ec2_1.DescribeImagesCommand({
+            Owners: ['self'],
+            Filters: [
+                {
+                    Name: 'tag:Project',
+                    Values: ['artinafti'],
+                },
+            ],
+        });
+        try {
+            const result = await this.ec2.send(command);
+            return (result.Images || []).map((img) => ({
+                ami_id: img.ImageId,
+                name: img.Name,
+                state: img.State,
+                created: img.CreationDate,
+                shelved_from: img.Tags?.find((t) => t.Key === 'ShelvedFrom')?.Value,
+            }));
+        }
+        catch (error) {
+            throw new common_1.HttpException(`Failed to list shelved AMIs: ${error.message}`, common_1.HttpStatus.BAD_GATEWAY);
+        }
+    }
+    async deleteShelved(amiId) {
+        this.logger.log(`Deleting shelved AMI ${amiId}...`);
+        try {
+            const describeCmd = new client_ec2_1.DescribeImagesCommand({
+                ImageIds: [amiId],
+            });
+            const imageResult = await this.ec2.send(describeCmd);
+            const snapshotIds = (imageResult.Images?.[0]?.BlockDeviceMappings || [])
+                .map((b) => b.Ebs?.SnapshotId)
+                .filter(Boolean);
+            await this.ec2.send(new client_ec2_1.DeregisterImageCommand({ ImageId: amiId }));
+            for (const snapId of snapshotIds) {
+                await this.ec2.send(new client_ec2_1.DeleteSnapshotCommand({ SnapshotId: snapId }));
+            }
+            return {
+                deleted_ami: amiId,
+                deleted_snapshots: snapshotIds,
+                message: 'AMI and snapshots deleted. Storage charges stopped.',
+            };
+        }
+        catch (error) {
+            throw new common_1.HttpException(`Delete failed: ${error.message}`, common_1.HttpStatus.BAD_GATEWAY);
+        }
+    }
     async waitForRunning(instanceId, timeoutSeconds = 300) {
         this.logger.log(`Waiting for ${instanceId} to reach running state...`);
         try {

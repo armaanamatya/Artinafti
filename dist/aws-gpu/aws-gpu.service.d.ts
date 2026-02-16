@@ -61,6 +61,30 @@ export declare class AwsGpuService {
         previous_state: import("@aws-sdk/client-ec2").InstanceStateName;
         current_state: import("@aws-sdk/client-ec2").InstanceStateName;
     }[]>;
+    shelveInstance(instanceId: string): Promise<{
+        ami_id: string;
+        ami_name: string;
+        shelved_from: string;
+        message: string;
+    }>;
+    restoreInstance(amiId: string, name?: string, instanceType?: string): Promise<{
+        instance_id: string;
+        instance_type: import("@aws-sdk/client-ec2")._InstanceType;
+        state: import("@aws-sdk/client-ec2").InstanceStateName;
+        restored_from: string;
+    }>;
+    listShelved(): Promise<{
+        ami_id: string;
+        name: string;
+        state: import("@aws-sdk/client-ec2").ImageState;
+        created: string;
+        shelved_from: string;
+    }[]>;
+    deleteShelved(amiId: string): Promise<{
+        deleted_ami: string;
+        deleted_snapshots: string[];
+        message: string;
+    }>;
     waitForRunning(instanceId: string, timeoutSeconds?: number): Promise<{
         instance_id: string;
         instance_type: import("@aws-sdk/client-ec2")._InstanceType;

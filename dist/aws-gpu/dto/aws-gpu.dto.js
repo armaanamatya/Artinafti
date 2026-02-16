@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.InstanceIdsDto = exports.LaunchAwsInstanceDto = void 0;
+exports.RestoreInstanceDto = exports.InstanceIdsDto = exports.LaunchAwsInstanceDto = void 0;
 const class_validator_1 = require("class-validator");
 class LaunchAwsInstanceDto {
 }
@@ -32,4 +32,21 @@ __decorate([
     (0, class_validator_1.IsString)({ each: true }),
     __metadata("design:type", Array)
 ], InstanceIdsDto.prototype, "instance_ids", void 0);
+class RestoreInstanceDto {
+}
+exports.RestoreInstanceDto = RestoreInstanceDto;
+__decorate([
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], RestoreInstanceDto.prototype, "ami_id", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], RestoreInstanceDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], RestoreInstanceDto.prototype, "instance_type", void 0);
 //# sourceMappingURL=aws-gpu.dto.js.map

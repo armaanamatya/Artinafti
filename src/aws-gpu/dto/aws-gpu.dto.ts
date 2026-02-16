@@ -15,3 +15,16 @@ export class InstanceIdsDto {
   @IsString({ each: true })
   instance_ids: string[];
 }
+
+export class RestoreInstanceDto {
+  @IsString()
+  ami_id: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  instance_type?: string;
+}
