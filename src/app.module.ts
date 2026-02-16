@@ -8,6 +8,7 @@ import { UpscalerModule } from './upscaler/upscaler.module';
 import { PythonModule } from './python/python.module';
 import { HealthModule } from './health/health.module';
 import { LambdaModule } from './lambda/lambda.module';
+import { AwsGpuModule } from './aws-gpu/aws-gpu.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { LambdaModule } from './lambda/lambda.module';
     PythonModule,
     HealthModule,
     LambdaModule,
+    AwsGpuModule,
   ],
 })
 export class AppModule {}

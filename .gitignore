@@ -14,3 +14,11 @@ output/
 node_modules/
 python-scripts/services/__pycache__/
 python-scripts/utils/__pycache__/
+*.png
+*jpg
+*jpeg
+changelogdocker.md
+Recording 2026-02-14 033036.mp4
+di
+demo.mp4   
+4xoutput/
