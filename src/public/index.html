@@ -887,29 +887,36 @@ function pollInstanceStatus() {
       if (data.status === 'active' && data.ip) {
         clearInterval(state.pollTimer);
         state.instanceIp = data.ip;
-        saveState();
 
-        // Auto-deploy
-        setGpuStatus('deploying', data.ip);
-        toast('Instance active — deploying stack...', 'success');
-
-        try {
-          const deployResult = await api(`/api/gpu/deploy/${state.instanceId}`, { method: 'POST' });
-          if (deployResult.success) {
-            setGpuStatus('ready', `<strong>${data.ip}</strong> <span class="cost-tag">$${instanceTypeSelect.selectedOptions[0]?.dataset.price || '?'}/hr</span>`);
-            runBtn.disabled = !state.selectedFile;
-            toast('Deploy complete — ready to upscale', 'success');
-          } else {
-            setGpuStatus('active', `<strong>${data.ip}</strong> — deploy failed, try manually`);
-            toast('Deploy had issues: ' + (deployResult.error || 'unknown'), 'error');
-          }
-        } catch (e) {
-          // Deploy failed but instance is still active — allow manual use
-          setGpuStatus('active', `<strong>${data.ip}</strong> — deploy failed`);
-          toast('Auto-deploy failed: ' + e.message, 'error');
+        if (state.deployed) {
+          // Already deployed (restored from localStorage) — go straight to ready
+          setGpuStatus('ready', `<strong>${data.ip}</strong>`);
           runBtn.disabled = !state.selectedFile;
+          saveState();
+        } else {
+          // First launch — auto-deploy
+          state.deployed = true;
+          saveState();
+          setGpuStatus('deploying', data.ip);
+          toast('Instance active — deploying stack...', 'success');
+
+          try {
+            const deployResult = await api(`/api/gpu/deploy/${state.instanceId}`, { method: 'POST' });
+            if (deployResult.success) {
+              setGpuStatus('ready', `<strong>${data.ip}</strong> <span class="cost-tag">$${instanceTypeSelect.selectedOptions[0]?.dataset.price || '?'}/hr</span>`);
+              runBtn.disabled = !state.selectedFile;
+              toast('Deploy complete — ready to upscale', 'success');
+            } else {
+              setGpuStatus('active', `<strong>${data.ip}</strong> — deploy failed, try manually`);
+              toast('Deploy had issues: ' + (deployResult.error || 'unknown'), 'error');
+            }
+          } catch (e) {
+            setGpuStatus('active', `<strong>${data.ip}</strong> — deploy failed`);
+            toast('Auto-deploy failed: ' + e.message, 'error');
+            runBtn.disabled = !state.selectedFile;
+          }
+          saveState();
         }
-        saveState();
       } else {
         setGpuStatus('polling', data.status || '');
       }
@@ -1115,11 +1122,16 @@ function pollJobStatus() {
         resultMeta.innerHTML = metaHtml;
 
         resultContainer.classList.add('visible');
-        downloadBtn.onclick = () => {
-          const a = document.createElement('a');
-          a.href = imgUrl;
-          a.download = `artinafti-${state.jobId}.png`;
-          a.click();
+        downloadBtn.onclick = async () => {
+          try {
+            const blob = await fetch(imgUrl).then(r => r.blob());
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `artinafti-${state.jobId}.png`;
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch { toast('Download failed', 'error'); }
         };
 
         runBtn.disabled = false;
@@ -1168,7 +1180,13 @@ function restoreState() {
     $(`params-${state.activeModel}`).style.display = '';
 
     // Re-check instance status
-    if (saved.instanceId) {
+    if (saved.instanceId && saved.instanceIp) {
+      // We have an IP — instance was already active, skip deploy
+      setGpuStatus('ready', `<strong>${saved.instanceIp}</strong>`);
+      runBtn.disabled = !state.selectedFile;
+    } else if (saved.instanceId) {
+      // No IP yet — still booting, poll without deploying
+      state.deployed = true; // prevent auto-deploy
       setGpuStatus('polling', 'Reconnecting…');
       pollInstanceStatus();
     }
