@@ -12,3 +12,5 @@ output/
 *secret*.json
 .claude/
 node_modules/
+python-scripts/services/__pycache__/
+python-scripts/utils/__pycache__/
