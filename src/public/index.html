@@ -240,6 +240,62 @@ label {
   border-radius: 3px;
 }
 
+/* ── MODE TOGGLE ── */
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.mode-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  transition: color var(--transition);
+}
+
+.mode-label.active { color: var(--accent); }
+
+.flip-switch {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  cursor: pointer;
+}
+
+.flip-switch input { display: none; }
+
+.flip-track {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  transition: all var(--transition);
+}
+
+.flip-switch input:checked ~ .flip-track {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.flip-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: all var(--transition);
+}
+
+.flip-switch input:checked ~ .flip-thumb {
+  left: 23px;
+  background: var(--accent);
+}
+
 /* ── MODEL TABS ── */
 .model-tabs {
   display: flex;
@@ -548,7 +604,18 @@ input[type="range"]::-webkit-slider-thumb {
 <div class="shell">
   <header>
     <div class="logo"><span>A</span>rtinafti</div>
-    <div class="version">gpu upscaler · test console</div>
+    <div style="display:flex;align-items:center;gap:1.5rem;">
+      <div class="mode-toggle">
+        <span class="mode-label active" id="labelLocal">Local</span>
+        <label class="flip-switch">
+          <input type="checkbox" id="modeToggle" checked>
+          <div class="flip-track"></div>
+          <div class="flip-thumb"></div>
+        </label>
+        <span class="mode-label" id="labelRemote">Remote</span>
+      </div>
+      <div class="version">gpu upscaler · test console</div>
+    </div>
   </header>
 
   <!-- ═══════ GPU CONTROL ═══════ -->
@@ -717,6 +784,7 @@ input[type="range"]::-webkit-slider-thumb {
 <script>
 // ── STATE ──
 const state = {
+  mode: 'remote', // 'local' | 'remote'
   instanceId: null,
   instanceIp: null,
   gpuStatus: 'idle', // idle | launching | polling | active | deploying | ready | error
@@ -751,6 +819,38 @@ const resultImg = $('resultImg');
 const resultMeta = $('resultMeta');
 const downloadBtn = $('downloadBtn');
 const outputEmpty = $('outputEmpty');
+
+// ── MODE TOGGLE ──
+const modeToggle = $('modeToggle');
+const labelLocal = $('labelLocal');
+const labelRemote = $('labelRemote');
+const gpuSection = document.querySelector('.section'); // first section = GPU
+
+function getUpscaleBaseUrl() {
+  if (state.mode === 'local') return '';  // same origin
+  return `http://${state.instanceIp}:3000`;
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  modeToggle.checked = mode === 'remote';
+  labelLocal.classList.toggle('active', mode === 'local');
+  labelRemote.classList.toggle('active', mode === 'remote');
+
+  // Show/hide GPU section
+  gpuSection.style.display = mode === 'local' ? 'none' : '';
+
+  // Update run button availability
+  if (mode === 'local') {
+    runBtn.disabled = !state.selectedFile;
+  } else {
+    runBtn.disabled = state.gpuStatus !== 'ready' || !state.selectedFile;
+  }
+}
+
+modeToggle.addEventListener('change', () => {
+  setMode(modeToggle.checked ? 'remote' : 'local');
+});
 
 // ── TOASTS ──
 function toast(msg, type = 'info') {
@@ -1017,7 +1117,7 @@ function handleFile(file) {
   };
   reader.readAsDataURL(file);
 
-  runBtn.disabled = state.gpuStatus !== 'ready';
+  runBtn.disabled = state.mode === 'local' ? false : state.gpuStatus !== 'ready';
 }
 
 previewClear.addEventListener('click', () => {
@@ -1059,7 +1159,8 @@ function getParams() {
 
 // ── RUN UPSCALE ──
 runBtn.addEventListener('click', async () => {
-  if (!state.selectedFile || !state.instanceIp) return;
+  if (!state.selectedFile) return;
+  if (state.mode === 'remote' && !state.instanceIp) return;
 
   runBtn.disabled = true;
   outputEmpty.style.display = 'none';
@@ -1077,7 +1178,7 @@ runBtn.addEventListener('click', async () => {
   }
 
   try {
-    const res = await fetch(`http://${state.instanceIp}:3000/api/upscale/${state.activeModel}`, {
+    const res = await fetch(`${getUpscaleBaseUrl()}/api/upscale/${state.activeModel}`, {
       method: 'POST',
       body: formData,
     });
@@ -1102,7 +1203,7 @@ function pollJobStatus() {
 
   state.jobPollTimer = setInterval(async () => {
     try {
-      const res = await fetch(`http://${state.instanceIp}:3000/api/upscale/status/${state.jobId}`);
+      const res = await fetch(`${getUpscaleBaseUrl()}/api/upscale/status/${state.jobId}`);
       const data = await res.json();
 
       const pct = data.progress || 0;
@@ -1113,7 +1214,7 @@ function pollJobStatus() {
         clearInterval(state.jobPollTimer);
         progressWrap.classList.remove('visible');
 
-        const imgUrl = `http://${state.instanceIp}:3000${data.output_url}`;
+        const imgUrl = `${getUpscaleBaseUrl()}${data.output_url}`;
         resultImg.src = imgUrl;
 
         let metaHtml = '';
@@ -1194,6 +1295,7 @@ function restoreState() {
 }
 
 // ── INIT ──
+setMode('remote');
 loadInstanceTypes();
 restoreState();
 </script>

@@ -10,20 +10,30 @@ import { HealthModule } from './health/health.module';
 import { LambdaModule } from './lambda/lambda.module';
 import { AwsGpuModule } from './aws-gpu/aws-gpu.module';
 
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-    }),
+const isLocalMode = process.env.LOCAL_MODE === 'true';
+
+const optionalImports = [];
+
+if (!isLocalMode) {
+  optionalImports.push(
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
       },
     }),
+  );
+}
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [configuration],
+    }),
+    ...optionalImports,
     ServeStaticModule.forRoot({
-      rootPath: join(process.env.OUTPUT_DIR || '/app/results'),
+      rootPath: join(process.env.OUTPUT_DIR || './results'),
       serveRoot: '/api/results',
     }),
     ServeStaticModule.forRoot({

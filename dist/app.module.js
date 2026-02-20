@@ -18,6 +18,16 @@ const python_module_1 = require("./python/python.module");
 const health_module_1 = require("./health/health.module");
 const lambda_module_1 = require("./lambda/lambda.module");
 const aws_gpu_module_1 = require("./aws-gpu/aws-gpu.module");
+const isLocalMode = process.env.LOCAL_MODE === 'true';
+const optionalImports = [];
+if (!isLocalMode) {
+    optionalImports.push(bullmq_1.BullModule.forRoot({
+        connection: {
+            host: process.env.REDIS_HOST || 'redis',
+            port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        },
+    }));
+}
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -28,14 +38,9 @@ exports.AppModule = AppModule = __decorate([
                 isGlobal: true,
                 load: [configuration_1.default],
             }),
-            bullmq_1.BullModule.forRoot({
-                connection: {
-                    host: process.env.REDIS_HOST || 'redis',
-                    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                },
-            }),
+            ...optionalImports,
             serve_static_1.ServeStaticModule.forRoot({
-                rootPath: (0, path_1.join)(process.env.OUTPUT_DIR || '/app/results'),
+                rootPath: (0, path_1.join)(process.env.OUTPUT_DIR || './results'),
                 serveRoot: '/api/results',
             }),
             serve_static_1.ServeStaticModule.forRoot({

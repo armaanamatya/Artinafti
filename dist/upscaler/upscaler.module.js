@@ -12,18 +12,25 @@ const bullmq_1 = require("@nestjs/bullmq");
 const upscaler_controller_1 = require("./upscaler.controller");
 const upscaler_service_1 = require("./upscaler.service");
 const upscaler_processor_1 = require("./processors/upscaler.processor");
+const python_module_1 = require("../python/python.module");
+const isLocalMode = process.env.LOCAL_MODE === 'true';
+const optionalImports = [];
+const optionalProviders = [];
+if (!isLocalMode) {
+    optionalImports.push(bullmq_1.BullModule.registerQueue({ name: 'upscaler' }));
+    optionalProviders.push(upscaler_processor_1.UpscalerProcessor);
+}
 let UpscalerModule = class UpscalerModule {
 };
 exports.UpscalerModule = UpscalerModule;
 exports.UpscalerModule = UpscalerModule = __decorate([
     (0, common_1.Module)({
         imports: [
-            bullmq_1.BullModule.registerQueue({
-                name: 'upscaler',
-            }),
+            ...optionalImports,
+            python_module_1.PythonModule,
         ],
         controllers: [upscaler_controller_1.UpscalerController],
-        providers: [upscaler_service_1.UpscalerService, upscaler_processor_1.UpscalerProcessor],
+        providers: [upscaler_service_1.UpscalerService, ...optionalProviders],
     })
 ], UpscalerModule);
 //# sourceMappingURL=upscaler.module.js.map
