@@ -23,4 +23,13 @@ export default () => ({
     defaultRegion: process.env.LAMBDA_DEFAULT_REGION || 'us-east-1',
     repoUrl: process.env.LAMBDA_REPO_URL || '',
   },
+  aws: {
+    region: process.env.AWS_REGION || 'us-east-1',
+    amiId: process.env.AWS_GPU_AMI_ID || '',
+    instanceType: process.env.AWS_GPU_INSTANCE_TYPE || 'g5.xlarge',
+    keyName: process.env.AWS_KEY_NAME || '',
+    securityGroupIds: process.env.AWS_SECURITY_GROUP_IDS || '',
+    subnetId: process.env.AWS_SUBNET_ID || '',
+    repoUrl: process.env.AWS_REPO_URL || process.env.LAMBDA_REPO_URL || '',
+  },
 });

@@ -8,6 +8,22 @@ import { UpscalerModule } from './upscaler/upscaler.module';
 import { PythonModule } from './python/python.module';
 import { HealthModule } from './health/health.module';
 import { LambdaModule } from './lambda/lambda.module';
+import { AwsGpuModule } from './aws-gpu/aws-gpu.module';
+
+const isLocalMode = process.env.LOCAL_MODE === 'true';
+
+const optionalImports = [];
+
+if (!isLocalMode) {
+  optionalImports.push(
+    BullModule.forRoot({
+      connection: {
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+      },
+    }),
+  );
+}
 
 @Module({
   imports: [
@@ -15,14 +31,9 @@ import { LambdaModule } from './lambda/lambda.module';
       isGlobal: true,
       load: [configuration],
     }),
-    BullModule.forRoot({
-      connection: {
-        host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10),
-      },
-    }),
+    ...optionalImports,
     ServeStaticModule.forRoot({
-      rootPath: join(process.env.OUTPUT_DIR || '/app/results'),
+      rootPath: join(process.env.OUTPUT_DIR || './results'),
       serveRoot: '/api/results',
     }),
     ServeStaticModule.forRoot({
@@ -34,6 +45,7 @@ import { LambdaModule } from './lambda/lambda.module';
     PythonModule,
     HealthModule,
     LambdaModule,
+    AwsGpuModule,
   ],
 })
 export class AppModule {}
